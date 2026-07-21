@@ -1,0 +1,11 @@
+# Computer vision and pose estimation
+ultralytics==8.2.81
+mediapipe==0.10.14
+opencv-python==4.10.0.84
+
+# Desktop application and image rendering
+PyQt6==6.7.1
+Pillow==10.4.0
+
+# Numerical computing
+numpy==1.26.4

@@ -1,0 +1,385 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>750</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>AI Vision Guardian - 智能人员跌倒实时监测系统</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout_main">
+    <property name="spacing">
+     <number>15</number>
+    </property>
+    <property name="leftMargin">
+     <number>15</number>
+    </property>
+    <property name="topMargin">
+     <number>15</number>
+    </property>
+    <property name="rightMargin">
+     <number>15</number>
+    </property>
+    <property name="bottomMargin">
+     <number>15</number>
+    </property>
+    <item>
+     <widget class="QFrame" name="header_frame">
+      <property name="styleSheet">
+       <string notr="true">background-color: #1E293B; border: 1px solid #334155; border-radius: 10px;</string>
+      </property>
+      <layout class="QHBoxLayout" name="horizontalLayout_header">
+       <property name="leftMargin">
+        <number>20</number>
+       </property>
+       <property name="topMargin">
+        <number>12</number>
+       </property>
+       <property name="rightMargin">
+        <number>20</number>
+       </property>
+       <property name="bottomMargin">
+        <number>12</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="title_label">
+         <property name="font">
+          <font>
+           <family>Microsoft YaHei</family>
+           <pointsize>15</pointsize>
+           <bold>true</bold>
+          </font>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">color: #F8FAFC; border: none;</string>
+         </property>
+         <property name="text">
+          <string>🛡️ 智慧安防 | 智能人员跌倒实时检测系统</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer_header">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="lbl_clock">
+         <property name="font">
+          <font>
+           <family>Consolas</family>
+           <pointsize>12</pointsize>
+          </font>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">color: #94A3B8; border: none;</string>
+         </property>
+         <property name="text">
+          <string>🕒 --:--:--</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_content">
+      <property name="spacing">
+       <number>15</number>
+      </property>
+      <item>
+       <widget class="QFrame" name="video_card">
+        <property name="styleSheet">
+         <string notr="true">background-color: #1E293B; border: 1px solid #334155; border-radius: 10px;</string>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout_video">
+         <property name="leftMargin">
+          <number>12</number>
+         </property>
+         <property name="topMargin">
+          <number>12</number>
+         </property>
+         <property name="rightMargin">
+          <number>12</number>
+         </property>
+         <property name="bottomMargin">
+          <number>12</number>
+         </property>
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_vheader">
+           <item>
+            <widget class="QLabel" name="lbl_live_badge">
+             <property name="font">
+              <font>
+               <weight>75</weight>
+               <bold>true</bold>
+              </font>
+             </property>
+             <property name="styleSheet">
+              <string notr="true">color: #64748B; font-size: 13px; border: none;</string>
+             </property>
+             <property name="text">
+              <string>● 未启动监控</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_vheader">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QLabel" name="video_label">
+           <property name="minimumSize">
+            <size>
+             <width>720</width>
+             <height>480</height>
+            </size>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">background-color: #020617; border-radius: 8px; color: #475569; font-size: 15px;</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+           <property name="text">
+            <string>请选择视频源，然后点击右侧【启动实时检测】</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QFrame" name="right_card">
+        <property name="maximumSize">
+         <size>
+          <width>380</width>
+          <height>16777215</height>
+         </size>
+        </property>
+        <property name="styleSheet">
+         <string notr="true">background-color: #1E293B; border: 1px solid #334155; border-radius: 10px;</string>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout_right">
+         <property name="spacing">
+          <number>12</number>
+         </property>
+         <item>
+          <widget class="QLabel" name="ctrl_title">
+           <property name="font">
+            <font>
+             <family>Microsoft YaHei</family>
+             <pointsize>12</pointsize>
+             <bold>true</bold>
+            </font>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">color: #38BDF8; border: none;</string>
+           </property>
+           <property name="text">
+            <string>系统控制组件</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btn_camera">
+           <property name="text">
+            <string>📷 切换为摄像头 (Index 0)</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btn_file">
+           <property name="text">
+            <string>📁 导入视频文件...</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_btn_group">
+           <item>
+            <widget class="QPushButton" name="btn_start">
+             <property name="styleSheet">
+              <string notr="true">background-color: #0284C7; border: none; font-weight: bold;</string>
+             </property>
+             <property name="text">
+              <string>▶ 启动实时检测</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="btn_stop">
+             <property name="enabled">
+              <bool>false</bool>
+             </property>
+             <property name="styleSheet">
+              <string notr="true">background-color: #DC2626; border: none; font-weight: bold;</string>
+             </property>
+             <property name="text">
+              <string>⏹ 停止检测</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btn_history">
+           <property name="styleSheet">
+            <string notr="true">background-color: #8B5CF6; border: none; font-weight: bold;</string>
+           </property>
+           <property name="text">
+            <string>🎬 历史跌倒片段</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="Line" name="line">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="stat_title">
+           <property name="font">
+            <font>
+             <family>Microsoft YaHei</family>
+             <pointsize>12</pointsize>
+             <bold>true</bold>
+            </font>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">color: #38BDF8; border: none;</string>
+           </property>
+           <property name="text">
+            <string>实时监控指标</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QFrame" name="alarm_card">
+           <property name="styleSheet">
+            <string notr="true">background-color: #0F172A; border: 1px solid #1E293B; border-radius: 8px;</string>
+           </property>
+           <layout class="QVBoxLayout" name="verticalLayout_alarm">
+            <item>
+             <widget class="QLabel" name="lbl_alarm_status">
+              <property name="font">
+               <font>
+                <family>Microsoft YaHei</family>
+                <pointsize>14</pointsize>
+                <bold>true</bold>
+               </font>
+              </property>
+              <property name="styleSheet">
+               <string notr="true">color: #38BDF8; border: none;</string>
+              </property>
+              <property name="alignment">
+               <set>Qt::AlignCenter</set>
+              </property>
+              <property name="text">
+               <string>系统待命</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_subdata">
+           <item>
+            <widget class="QLabel" name="lbl_posture">
+             <property name="styleSheet">
+              <string notr="true">font-size: 13px; color: #E2E8F0; border: none;</string>
+             </property>
+             <property name="text">
+              <string>姿态: --</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_subdata">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QLabel" name="lbl_fall_count">
+             <property name="styleSheet">
+              <string notr="true">font-size: 13px; color: #E2E8F0; border: none;</string>
+             </property>
+             <property name="text">
+              <string>跌倒告警: 0 次</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QLabel" name="log_title">
+           <property name="font">
+            <font>
+             <family>Microsoft YaHei</family>
+             <pointsize>11</pointsize>
+             <bold>true</bold>
+            </font>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">color: #94A3B8; border: none;</string>
+           </property>
+           <property name="text">
+            <string>系统运行日志</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QListWidget" name="log_list">
+           <property name="styleSheet">
+            <string notr="true">background-color: #0F172A; border: 1px solid #334155; border-radius: 6px; color: #94A3B8; font-size: 12px;</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
