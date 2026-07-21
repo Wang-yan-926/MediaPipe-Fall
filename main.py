@@ -1,3 +1,4 @@
+
 import sys
 import os
 import math
@@ -7,14 +8,20 @@ from collections import deque
 from ultralytics import YOLO
 import mediapipe as mp
 from PIL import Image, ImageDraw, ImageFont
+import pygame 
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, 
                              QPushButton, QFrame, QListWidgetItem, QDialog)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QDateTime, QUrl
 from PyQt6.QtGui import QImage, QPixmap, QFont, QDesktopServices
+from PyQt6.uic import loadUi
 
-# 🌟 引用你转换好的 UI 文件
-from diedao import Ui_MainWindow
+
+# ==================== 初始化音频模块 ====================
+try:
+    pygame.mixer.init()
+except Exception as e:
+    print(f"音频模块初始化失败: {e}")
 
 
 # ==================== 全局主题样式表 ====================
@@ -69,7 +76,6 @@ QListWidget::item {
 # ==================== 中文绘制辅助函数 ====================
 
 def cv2_add_chinese_text(img, text, position, font_size=20, color=(0, 255, 0)):
-    """在 OpenCV 图像上绘制中文文本"""
     img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img_pil)
 
@@ -126,7 +132,6 @@ class HistoryDialog(QDialog):
         
         main_layout = QHBoxLayout(self)
         
-        # 左侧列表
         left_layout = QVBoxLayout()
         self.file_list = QListWidget()
         self.file_list.itemClicked.connect(self.on_file_selected)
@@ -138,7 +143,6 @@ class HistoryDialog(QDialog):
 
         main_layout.addLayout(left_layout, stretch=2)
 
-        # 右侧播放器
         right_layout = QVBoxLayout()
         self.video_label = QLabel("请选择视频进行回放")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -205,9 +209,21 @@ class DetectionThread(QThread):
         self.save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'result')
         os.makedirs(self.save_dir, exist_ok=True)
 
+        self.alarm_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alarm.mp3')
+
     def stop(self):
         self.running = False
         self.wait()
+
+    def play_alarm_sound(self):
+        """播放告警音频文件"""
+        try:
+            if os.path.exists(self.alarm_file):
+                if not pygame.mixer.music.get_busy(): # 确保上一个播完或没在播时触发
+                    pygame.mixer.music.load(self.alarm_file)
+                    pygame.mixer.music.play()
+        except Exception as e:
+            print(f"播放警报音频异常: {e}")
 
     def run(self):
         self.log_signal.emit("正在加载 YOLOv8 & MediaPipe 模型...")
@@ -233,6 +249,7 @@ class DetectionThread(QThread):
         dusme_sonrasi_kareler = 0
         dusme_sonrasi_bekleme_suresi = 10
         dusme_video_yazici = None
+        was_falling = False  # 状态跟踪变量，防止连续重复触发警报音
 
         tampon_boyutu = 10
         kare_tamponu = deque(maxlen=tampon_boyutu)
@@ -291,6 +308,12 @@ class DetectionThread(QThread):
                                     is_falling = True
                                     dusme_sayaci += 1
                                     dusme_sonrasi_kareler = 0
+
+                                    # 🌟 跌倒瞬间触发语音警报
+                                    if not was_falling:
+                                        was_falling = True
+                                        self.play_alarm_sound()
+
                                     if 0.1 * fps <= dusme_sayaci <= 0.5 * fps and dusme_video_yazici is None:
                                         dusme_video_sayisi += 1
                                         dusme_video_dosyasi = os.path.join(self.save_dir, f'dusme_{dusme_video_sayisi}.mp4')
@@ -303,6 +326,7 @@ class DetectionThread(QThread):
                                         self.log_signal.emit(f"⚠️ 警报：检测到人员跌倒！已保存至 result/dusme_{dusme_video_sayisi}.mp4")
                                 else:
                                     dusme_sayaci = 0
+                                    was_falling = False  # 恢复状态，为下一次跌倒做准备
 
                                 if current_durus == "站立 (Normal)" and dusme_video_yazici is not None:
                                     dusme_sonrasi_kareler += 1
@@ -332,25 +356,24 @@ class DetectionThread(QThread):
         self.log_signal.emit("⏹ 视频流已关闭。")
 
 
-# ==================== PyQt6 主界面（逻辑与UI绑定） ====================
+# ==================== PyQt6 主界面 ====================
 
-class MainWindow(QMainWindow, Ui_MainWindow):
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        # 🌟 初始化从 diedao.py 继承的 UI
-        self.setupUi(self)
+        
+        ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'diedao.ui')
+        loadUi(ui_path, self)
 
         self.thread = None
         self.video_source = 0
 
-        # 绑定按钮槽函数
         self.btn_camera.clicked.connect(self.set_camera_source)
         self.btn_file.clicked.connect(self.select_video_file)
         self.btn_start.clicked.connect(self.start_detection)
         self.btn_stop.clicked.connect(self.stop_detection)
         self.btn_history.clicked.connect(self.open_history_dialog)
 
-        # 启动顶部实时时钟
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_clock)
         self.timer.start(1000)
