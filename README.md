@@ -1,3 +1,25 @@
+# 视频演示
+
+
+https://github.com/user-attachments/assets/2c8fb175-fd3e-49a3-948e-44afe3e192a5
+
+
+
+https://github.com/user-attachments/assets/e7d63355-89d7-474c-b741-d80574386cc4
+
+
+
+https://github.com/user-attachments/assets/10633b68-2657-4d49-ad18-e4f3b768d6cf
+
+
+
+https://github.com/user-attachments/assets/0f04dae6-4ae6-4252-9c9a-d6c451996ffd
+
+
+
+
+
+
 # MediaPipe Fall
 
 一个基于 **YOLOv8**、**MediaPipe** 与 **PyQt6** 的桌面端人员跌倒检测系统。它支持摄像头和本地视频输入，实时识别画面中的人员姿态；在检测到疑似跌倒时自动触发告警，并将事件片段保存下来供回放。
