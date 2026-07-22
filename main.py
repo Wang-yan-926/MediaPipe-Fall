@@ -5,17 +5,15 @@ import time
 import json
 import urllib.request
 import urllib.parse
-import threading
 import numpy as np
 import cv2
 from collections import deque
-from queue import Queue, Full
 from ultralytics import YOLO
 import mediapipe as mp
 from PIL import Image, ImageDraw, ImageFont
 import pygame 
 import pymysql
-
+import threading  # 引入多线程库用于异步告警处理
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, 
                              QPushButton, QFrame, QListWidget, QListWidgetItem, QDialog, 
                              QFileDialog, QHBoxLayout, QVBoxLayout, QComboBox,
@@ -215,7 +213,7 @@ def aci_hesapla(omuz_merkezi, kalca_merkezi):
 class LoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🔐 系统身份验证 ")
+        self.setWindowTitle("🔐 系统身份验证 (MySQL版)")
         self.resize(360, 230)
         self.user_role = None  
         self.logged_username = None
@@ -350,8 +348,6 @@ class SettingsDialog(QDialog):
 
 # ==================== 历史告警视频回放弹窗 ====================
 
-# ==================== 历史告警视频回放弹窗  ====================
-
 class HistoryDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -410,14 +406,12 @@ class HistoryDialog(QDialog):
                 log_id, alarm_time, filename, status = row
                 file_path = os.path.join(self.save_dir, filename)
                 
-                # 💡 核心优化：检查文件在文件夹中是否存在
                 if os.path.exists(file_path):
                     item_text = f"[{alarm_time}] {filename} ({status})"
                     item = QListWidgetItem(item_text)
                     item.setData(Qt.ItemDataRole.UserRole, file_path)
                     self.file_list.addItem(item)
                 else:
-                    # 如果文件夹里删了，顺便把数据库里的失效记录也清理掉
                     try:
                         cleanup_db = pymysql.connect(
                             host='localhost', user='root', password='231006410',
@@ -469,58 +463,9 @@ class HistoryDialog(QDialog):
         event.accept()
 
 
+
+
 # ==================== 后台检测线程 ====================
-
-class AlarmVideoWriter(threading.Thread):
-    """将告警片段写盘放到独立线程，绝不能阻塞实时检测循环。"""
-    _STOP = object()
-
-    def __init__(self, output_path, fps, frame_size, pre_frames, log_callback):
-        super().__init__(name="AlarmVideoWriter", daemon=True)
-        self.output_path = output_path
-        self.fps = fps
-        self.frame_size = frame_size
-        self.pre_frames = pre_frames
-        self.log_callback = log_callback
-        # 写盘暂时落后时宁可丢弃少量录像帧，也不要阻塞摄像头读取。
-        self.frames = Queue(maxsize=max(int(fps * 4), 60))
-
-    def submit(self, frame):
-        try:
-            self.frames.put_nowait(frame.copy())
-        except Full:
-            pass
-
-    def close(self):
-        try:
-            self.frames.put_nowait(self._STOP)
-        except Full:
-            # 队列满时移除最旧帧，确保结束信号可以送达。
-            try:
-                self.frames.get_nowait()
-                self.frames.put_nowait(self._STOP)
-            except Exception:
-                pass
-
-    def run(self):
-        writer = cv2.VideoWriter(
-            self.output_path, cv2.VideoWriter_fourcc(*'mp4v'), self.fps, self.frame_size
-        )
-        if not writer.isOpened():
-            self.log_callback("❌ 告警录像文件创建失败。")
-            return
-        try:
-            for frame in self.pre_frames:
-                writer.write(frame)
-            while True:
-                frame = self.frames.get()
-                if frame is self._STOP:
-                    break
-                writer.write(frame)
-        except Exception as e:
-            self.log_callback(f"❌ 告警录像保存异常: {e}")
-        finally:
-            writer.release()
 
 class DetectionThread(QThread):
     change_pixmap_signal = pyqtSignal(np.ndarray, str, int, bool)
@@ -540,7 +485,6 @@ class DetectionThread(QThread):
         self.alarm_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alarm.mp3')
         
         self.last_feishu_time = 0 
-        self.alarm_recorder = None
 
     def stop(self):
         self.running = False
@@ -559,25 +503,14 @@ class DetectionThread(QThread):
 
     def send_feishu_notification(self, video_filename):
         webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/e1d06cee-2c38-4679-962a-9fccb85fd766"
-
-        current_time = time.time()
-        if current_time - self.last_feishu_time < 30:
-            return
-        self.last_feishu_time = current_time
-
         time_str = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
         
         payload = {
             "msg_type": "interactive",
             "card": {
-                "config": {
-                    "wide_screen_mode": True
-                },
+                "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {
-                        "tag": "plain_text",
-                        "content": "🚨 紧急警报：智能看护系统检测到跌倒！"
-                    },
+                    "title": {"tag": "plain_text", "content": "🚨 紧急警报：智能看护系统检测到跌倒！"},
                     "template": "red"
                 },
                 "elements": [
@@ -593,12 +526,7 @@ class DetectionThread(QThread):
                     },
                     {
                         "tag": "note",
-                        "elements": [
-                            {
-                                "tag": "plain_text",
-                                "content": "请家属立刻查看监控或通过历史回访确认老人安全！"
-                            }
-                        ]
+                        "elements": [{"tag": "plain_text", "content": "请家属立刻查看监控或通过历史回访确认老人安全！"}]
                     }
                 ]
             }
@@ -625,11 +553,8 @@ class DetectionThread(QThread):
     def save_alarm_to_db(self, filename):
         try:
             db = pymysql.connect(
-                host='localhost',
-                user='root',
-                password='231006410',
-                database='fall_detector_db',
-                charset='utf8mb4'
+                host='localhost', user='root', password='231006410',
+                database='fall_detector_db', charset='utf8mb4'
             )
             cursor = db.cursor()
             time_str = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
@@ -643,13 +568,35 @@ class DetectionThread(QThread):
         except Exception as e:
             print(f"写入数据库告警记录失败: {e}")
 
-    def persist_alarm_event(self, filename):
-        """数据库和网络请求均在独立线程中运行。"""
-        self.save_alarm_to_db(filename)
-        self.send_feishu_notification(filename)
+    def handle_alarm_async(self, filename, buffer_frames, fps, genislik, yukseklik):
+        """🚀 核心优化：将耗时的写视频、连数据库、发网络请求、播音乐放在独立子线程执行，防止主界面卡顿"""
+        try:
+            # 1. 播放声音
+            self.play_alarm_sound()
+
+            # 2. 写入视频文件（包含前置缓冲区）
+            dusme_video_dosyasi = os.path.join(self.save_dir, filename)
+            writer = cv2.VideoWriter(
+                dusme_video_dosyasi, cv2.VideoWriter_fourcc(*'mp4v'), fps, (genislik, yukseklik)
+            )
+            while buffer_frames:
+                writer.write(buffer_frames.popleft())
+            
+            # 暂存 writer 引用以便后续主循环继续写入后续跌倒画面
+            self.current_async_writer = writer
+
+            # 3. 写入数据库
+            self.save_alarm_to_db(filename)
+
+            # 4. 发送飞书网络请求
+            self.send_feishu_notification(filename)
+            
+            self.log_signal.emit(f"⚠️ 警报：检测到人员跌倒！已异步存入本地与MySQL、推送飞书并保存至 {filename}")
+        except Exception as e:
+            self.log_signal.emit(f"❌ 异步处理告警异常: {e}")
 
     def run(self):
-        self.log_signal.emit("正在加载 YOLOv8 & MediaPipe 模型...")
+        self.log_signal.emit("正在加载 YOLOv8 & MediaPipe 模型 (已启用轻量极速与异步告警模式)...")
         try:
             model = YOLO('yolov8n.pt')
         except Exception as e:
@@ -676,7 +623,11 @@ class DetectionThread(QThread):
         dusme_video_sayisi = 0
         dusme_sonrasi_kareler = 0
         dusme_sonrasi_bekleme_suresi = 10
-        was_falling = False  
+        dusme_video_yazici = None
+        self.current_async_writer = None
+        
+        last_alarm_timestamp = 0
+        cooldown_seconds = 1  
 
         buffer_sec = self.settings.get("buffer_seconds", 10)
         tampon_boyutu = int(buffer_sec * fps)
@@ -686,7 +637,11 @@ class DetectionThread(QThread):
         mp_poz = mp.solutions.pose
         fall_threshold = self.settings.get("fall_threshold", 50)
 
-        with mp_poz.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as poz:
+        with mp_poz.Pose(
+            min_detection_confidence=0.5, 
+            min_tracking_confidence=0.5,
+            model_complexity=0
+        ) as poz:
             while self.running and cap.isOpened():
                 ret, kare = cap.read()
                 if not ret:
@@ -749,33 +704,25 @@ class DetectionThread(QThread):
                                     dusme_sayaci += 1
                                     dusme_sonrasi_kareler = 0
 
-                                    if not was_falling:
-                                        was_falling = True
-                                        self.play_alarm_sound()
-
-                                    if 0.1 * fps <= dusme_sayaci <= 0.5 * fps and self.alarm_recorder is None:
-                                        dusme_video_sayisi += 1
-                                        filename = f'dusme_{QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")}_{dusme_video_sayisi}.mp4'
-                                        dusme_video_dosyasi = os.path.join(self.save_dir, filename)
-
-                                        # 预缓存写盘、MySQL 和飞书请求都是慢操作；放到后台后，
-                                        # 本线程仍能持续读取摄像头帧并刷新界面。
-                                        self.alarm_recorder = AlarmVideoWriter(
-                                            dusme_video_dosyasi, fps, (genislik, yukseklik),
-                                            list(kare_tamponu), self.log_signal.emit
-                                        )
-                                        self.alarm_recorder.start()
-                                        threading.Thread(
-                                            target=self.persist_alarm_event,
-                                            args=(filename,), name="AlarmEventNotifier", daemon=True
-                                        ).start()
-                                        
-                                        self.log_signal.emit(f"⚠️ 警报：检测到人员跌倒！已存入本地与MySQL、推送飞书并保存至 {filename}")
+                                    current_time = time.time()
+                                    if 1 <= dusme_sayaci and (current_time - last_alarm_timestamp > cooldown_seconds):
+                                        if dusme_video_yazici is None and self.current_async_writer is None:
+                                            last_alarm_timestamp = current_time  
+                                            dusme_video_sayisi += 1
+                                            filename = f'dusme_{QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")}_{dusme_video_sayisi}.mp4'
+                                            
+                                            # 🚀 开启独立子线程异步处理文件写入与网络请求，保证当前帧顺畅通过
+                                            buffer_copy = deque(kare_tamponu)
+                                            alarm_thread = threading.Thread(
+                                                target=self.handle_alarm_async,
+                                                args=(filename, buffer_copy, fps, genislik, yukseklik)
+                                            )
+                                            alarm_thread.daemon = True
+                                            alarm_thread.start()
                                 else:
                                     dusme_sayaci = 0
-                                    was_falling = False  
 
-                                if current_durus == "站立 (Normal)" and self.alarm_recorder is not None:
+                                if current_durus == "站立 (Normal)" and (dusme_video_yazici is not None or self.current_async_writer is not None):
                                     dusme_sonrasi_kareler += 1
 
                             kare[y1:y2, x1:x2] = kisi_bbox
@@ -786,23 +733,26 @@ class DetectionThread(QThread):
                             text_pos = (x1, max(y1 - 30, 10))
                             kare = cv2_add_chinese_text(kare, current_durus, text_pos, font_size=22, color=color)
 
-                if self.alarm_recorder is not None:
-                    self.alarm_recorder.submit(kare)
+                # 同步获取异步创建好的 VideoWriter 句柄
+                if self.current_async_writer is not None:
+                    dusme_video_yazici = self.current_async_writer
+                    self.current_async_writer = None
 
-                if dusme_sonrasi_kareler > dusme_sonrasi_bekleme_suresi and self.alarm_recorder is not None:
-                    self.alarm_recorder.close()
-                    self.alarm_recorder = None
+                if dusme_video_yazici is not None:
+                    dusme_video_yazici.write(kare)
+
+                if dusme_sonrasi_kareler > dusme_sonrasi_bekleme_suresi and dusme_video_yazici is not None:
+                    dusme_video_yazici.release()
+                    dusme_video_yazici = None
                     self.log_signal.emit("ℹ️ 跌倒事件视频片段记录完毕。")
 
                 kare_tamponu.append(kare.copy())
                 self.change_pixmap_signal.emit(kare, current_durus, dusme_video_sayisi, is_falling)
 
         cap.release()
-        if self.alarm_recorder is not None:
-            self.alarm_recorder.close()
-            self.alarm_recorder = None
+        if dusme_video_yazici is not None:
+            dusme_video_yazici.release()
         self.log_signal.emit("⏹ 视频流已关闭。")
-
 
 # ==================== PyQt6 主界面 ====================
 
