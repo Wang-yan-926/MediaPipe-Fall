@@ -1,17 +1,25 @@
-
 import sys
 import os
 import math
+import time
+import json
+import urllib.request
+import urllib.parse
+import threading
 import numpy as np
 import cv2
 from collections import deque
+from queue import Queue, Full
 from ultralytics import YOLO
 import mediapipe as mp
 from PIL import Image, ImageDraw, ImageFont
 import pygame 
+import pymysql
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, 
-                             QPushButton, QFrame, QListWidgetItem, QDialog)
+                             QPushButton, QFrame, QListWidget, QListWidgetItem, QDialog, 
+                             QFileDialog, QHBoxLayout, QVBoxLayout, QComboBox,
+                             QLineEdit, QMessageBox, QSlider, QCheckBox, QFormLayout)
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QDateTime, QUrl
 from PyQt6.QtGui import QImage, QPixmap, QFont, QDesktopServices
 from PyQt6.uic import loadUi
@@ -22,6 +30,64 @@ try:
     pygame.mixer.init()
 except Exception as e:
     print(f"音频模块初始化失败: {e}")
+
+
+# ==================== 数据库连接与初始化工具 ====================
+
+def init_database():
+    """自动初始化 MySQL 数据库与基础表结构"""
+    try:
+        conn = pymysql.connect(
+            host='localhost',
+            user='root',
+            password='231006410',
+            charset='utf8mb4'
+        )
+        cursor = conn.cursor()
+        cursor.execute("CREATE DATABASE IF NOT EXISTS fall_detector_db DEFAULT CHARACTER SET utf8mb4;")
+        cursor.close()
+        conn.close()
+
+        db = pymysql.connect(
+            host='localhost',
+            user='root',
+            password='231006410',
+            database='fall_detector_db',
+            charset='utf8mb4'
+        )
+        cursor = db.cursor()
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(50) NOT NULL UNIQUE,
+            password VARCHAR(100) NOT NULL,
+            role VARCHAR(20) NOT NULL
+        );
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS alarm_logs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            alarm_time VARCHAR(50),
+            video_filename VARCHAR(255),
+            status VARCHAR(50)
+        );
+        """)
+
+        cursor.execute("SELECT COUNT(*) FROM users WHERE username='root';")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO users (username, password, role) VALUES ('root', '231006410', 'admin');")
+            cursor.execute("INSERT INTO users (username, password, role) VALUES ('family', '123456', 'family');")
+            db.commit()
+
+        cursor.close()
+        db.close()
+        print("✅ MySQL 数据库连接及初始化成功！")
+        return True
+    except Exception as e:
+        print(f"❌ 数据库连接失败: {e}")
+        return False
 
 
 # ==================== 全局主题样式表 ====================
@@ -40,7 +106,7 @@ QPushButton {
     background-color: #334155;
     border: 1px solid #475569;
     border-radius: 6px;
-    color: #F8FAFC;
+    color: #FFFFFF;
     font-size: 13px;
     font-weight: 600;
     padding: 8px 14px;
@@ -58,6 +124,32 @@ QPushButton:disabled {
     color: #64748B;
 }
 
+QComboBox, QLineEdit {
+    background-color: #334155;
+    border: 1px solid #475569;
+    border-radius: 6px;
+    color: #FFFFFF;
+    font-size: 13px;
+    padding: 6px 10px;
+}
+QComboBox:hover, QLineEdit:hover {
+    border-color: #64748B;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 25px;
+    border-left-width: 1px;
+    border-left-color: #475569;
+    border-left-style: solid;
+}
+QComboBox QAbstractItemView {
+    background-color: #1E293B;
+    color: #F8FAFC;
+    selection-background-color: #334155;
+    border: 1px solid #475569;
+}
+
 QListWidget {
     background-color: #0F172A;
     border: 1px solid #334155;
@@ -69,6 +161,23 @@ QListWidget {
 QListWidget::item {
     padding: 6px;
     border-bottom: 1px solid #1E293B;
+}
+
+QSlider::groove:horizontal {
+    border: 1px solid #475569;
+    height: 6px;
+    background: #1E293B;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #38BDF8;
+    border: 1px solid #0284C7;
+    width: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+}
+QSlider::handle:horizontal:hover {
+    background: #7DD3FC;
 }
 """
 
@@ -100,22 +209,154 @@ def aci_hesapla(omuz_merkezi, kalca_merkezi):
     aci = math.atan2(dy, dx)
     return abs(90 - np.degrees(aci))
 
-def durus_siniflandir(torso_aci, ayakta_esik=20, yatay_esik=50):
-    if torso_aci < ayakta_esik:
-        return "站立 (Normal)"
-    elif torso_aci > yatay_esik:
-        return "平躺 (Lying)"
-    else:
-        return "跌倒中 (Falling)"
+
+# ==================== 1. 登录验证弹窗 ====================
+
+class LoginDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔐 系统身份验证 ")
+        self.resize(360, 230)
+        self.user_role = None  
+        self.logged_username = None
+
+        layout = QVBoxLayout(self)
+
+        title_label = QLabel("智能跌倒检测与看护系统")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #38BDF8; margin-bottom: 10px;")
+        layout.addWidget(title_label)
+
+        form_layout = QFormLayout()
+        
+        self.txt_user = QLineEdit()
+        self.txt_user.setPlaceholderText("请输入账户名 (如: root)")
+        self.txt_user.setText("root")  
+        form_layout.addRow("账    号:", self.txt_user)
+
+        self.txt_pass = QLineEdit()
+        self.txt_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self.txt_pass.setPlaceholderText("请输入密码")
+        self.txt_pass.setText("231006410")  
+        form_layout.addRow("密    码:", self.txt_pass)
+
+        layout.addLayout(form_layout)
+
+        btn_layout = QHBoxLayout()
+        btn_login = QPushButton("登录系统")
+        btn_login.clicked.connect(self.handle_login)
+        btn_layout.addWidget(btn_login)
+
+        btn_cancel = QPushButton("退出")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        layout.addLayout(btn_layout)
+
+    def handle_login(self):
+        username = self.txt_user.text().strip()
+        password = self.txt_pass.text().strip()
+
+        try:
+            db = pymysql.connect(
+                host='localhost',
+                user='root',
+                password='231006410',
+                database='fall_detector_db',
+                charset='utf8mb4'
+            )
+            cursor = db.cursor()
+            cursor.execute("SELECT role FROM users WHERE username=%s AND password=%s;", (username, password))
+            result = cursor.fetchone()
+            cursor.close()
+            db.close()
+
+            if result:
+                self.user_role = result[0]  
+                self.logged_username = username
+                self.accept()
+            else:
+                QMessageBox.warning(self, "登录失败", "用户名或密码错误，请检查 MySQL 中的凭证！")
+        except Exception as e:
+            QMessageBox.critical(self, "数据库错误", f"无法连接到 MySQL 数据库:\n{e}")
 
 
-# ==================== 历史告警视频查看弹窗 ====================
+# ==================== 2. 系统设置弹窗 ====================
+
+class SettingsDialog(QDialog):
+    def __init__(self, current_settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("⚙️ 系统高级参数与飞书机器人设置")
+        self.resize(600, 340)
+        self.settings = current_settings.copy()
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+
+        self.slider_angle = QSlider(Qt.Orientation.Horizontal)
+        self.slider_angle.setRange(30, 70)
+        self.slider_angle.setValue(self.settings.get("fall_threshold", 50))
+        self.lbl_angle_val = QLabel(f"{self.slider_angle.value()} °")
+        self.slider_angle.valueChanged.connect(lambda v: self.lbl_angle_val.setText(f"{v} °"))
+        
+        angle_layout = QHBoxLayout()
+        angle_layout.addWidget(self.slider_angle)
+        angle_layout.addWidget(self.lbl_angle_val)
+        form_layout.addRow("跌倒倾斜角阈值:", angle_layout)
+
+        self.chk_sound = QCheckBox("启用声音告警 (alarm.mp3)")
+        self.chk_sound.setChecked(self.settings.get("sound_enabled", True))
+        form_layout.addRow("声 音 告 警:", self.chk_sound)
+
+        self.slider_buffer = QSlider(Qt.Orientation.Horizontal)
+        self.slider_buffer.setRange(3, 20)
+        self.slider_buffer.setValue(self.settings.get("buffer_seconds", 10))
+        self.lbl_buffer_val = QLabel(f"{self.slider_buffer.value()} 秒")
+        self.slider_buffer.valueChanged.connect(lambda v: self.lbl_buffer_val.setText(f"{v} 秒"))
+
+        buffer_layout = QHBoxLayout()
+        buffer_layout.addWidget(self.slider_buffer)
+        buffer_layout.addWidget(self.lbl_buffer_val)
+        form_layout.addRow("录制前置缓冲区:", buffer_layout)
+
+        self.txt_webhook = QLineEdit()
+        self.txt_webhook.setPlaceholderText("请输入飞书机器人 Webhook 链接")
+        self.txt_webhook.setText("https://open.feishu.cn/open-apis/bot/v2/hook/e1d06cee-2c38-4679-962a-9fccb85fd766")
+        self.txt_webhook.setReadOnly(True)  
+        form_layout.addRow("飞书Webhook:", self.txt_webhook)
+
+        layout.addLayout(form_layout)
+
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("保存配置")
+        btn_save.clicked.connect(self.save_settings)
+        btn_layout.addWidget(btn_save)
+
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        layout.addLayout(btn_layout)
+
+    def save_settings(self):
+        self.settings["fall_threshold"] = self.slider_angle.value()
+        self.settings["sound_enabled"] = self.chk_sound.isChecked()
+        self.settings["buffer_seconds"] = self.slider_buffer.value()
+        self.settings["feishu_webhook"] = "https://open.feishu.cn/open-apis/bot/v2/hook/e1d06cee-2c38-4679-962a-9fccb85fd766"
+        self.accept()
+
+
+# ==================== 历史告警视频回放弹窗 ====================
+
+# ==================== 历史告警视频回放弹窗  ====================
 
 class HistoryDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🎬 历史跌倒告警视频回放")
-        self.resize(850, 500)
+        self.setWindowTitle("🎬 历史跌倒告警记录与回放")
+        self.resize(900, 500)
 
         self.save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'result')
         os.makedirs(self.save_dir, exist_ok=True)
@@ -125,11 +366,9 @@ class HistoryDialog(QDialog):
         self.timer.timeout.connect(self.update_frame)
 
         self.initUI()
-        self.refresh_file_list()
+        self.load_logs_from_db()
 
     def initUI(self):
-        from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QListWidget
-        
         main_layout = QHBoxLayout(self)
         
         left_layout = QVBoxLayout()
@@ -137,33 +376,68 @@ class HistoryDialog(QDialog):
         self.file_list.itemClicked.connect(self.on_file_selected)
         left_layout.addWidget(self.file_list)
 
-        btn_open = QPushButton("📂 打开所在文件夹")
+        btn_open = QPushButton("📂 打开视频文件夹")
         btn_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self.save_dir)))
         left_layout.addWidget(btn_open)
 
-        main_layout.addLayout(left_layout, stretch=2)
+        main_layout.addLayout(left_layout, stretch=3)
 
         right_layout = QVBoxLayout()
-        self.video_label = QLabel("请选择视频进行回放")
+        self.video_label = QLabel("请从左侧选择告警记录进行回放")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setStyleSheet("background-color: #020617; border-radius: 8px; color: #64748B;")
         right_layout.addWidget(self.video_label, stretch=1)
 
         main_layout.addLayout(right_layout, stretch=4)
 
-    def refresh_file_list(self):
+    def load_logs_from_db(self):
         self.file_list.clear()
-        if os.path.exists(self.save_dir):
-            files = [f for f in os.listdir(self.save_dir) if f.endswith('.mp4')]
-            files.sort(reverse=True)
-            for file in files:
-                item = QListWidgetItem(f"📹 {file}")
-                item.setData(Qt.ItemDataRole.UserRole, os.path.join(self.save_dir, file))
-                self.file_list.addItem(item)
+        try:
+            db = pymysql.connect(
+                host='localhost',
+                user='root',
+                password='231006410',
+                database='fall_detector_db',
+                charset='utf8mb4'
+            )
+            cursor = db.cursor()
+            cursor.execute("SELECT id, alarm_time, video_filename, status FROM alarm_logs ORDER BY id DESC;")
+            records = cursor.fetchall()
+            cursor.close()
+            db.close()
+
+            for row in records:
+                log_id, alarm_time, filename, status = row
+                file_path = os.path.join(self.save_dir, filename)
+                
+                # 💡 核心优化：检查文件在文件夹中是否存在
+                if os.path.exists(file_path):
+                    item_text = f"[{alarm_time}] {filename} ({status})"
+                    item = QListWidgetItem(item_text)
+                    item.setData(Qt.ItemDataRole.UserRole, file_path)
+                    self.file_list.addItem(item)
+                else:
+                    # 如果文件夹里删了，顺便把数据库里的失效记录也清理掉
+                    try:
+                        cleanup_db = pymysql.connect(
+                            host='localhost', user='root', password='231006410',
+                            database='fall_detector_db', charset='utf8mb4'
+                        )
+                        c = cleanup_db.cursor()
+                        c.execute("DELETE FROM alarm_logs WHERE id = %s;", (log_id,))
+                        cleanup_db.commit()
+                        c.close()
+                        cleanup_db.close()
+                    except:
+                        pass
+
+        except Exception as e:
+            print(f"从数据库读取历史失败: {e}")
 
     def on_file_selected(self, item):
         file_path = item.data(Qt.ItemDataRole.UserRole)
         if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(self, "文件缺失", f"在本地磁盘中未找到该视频文件:\n{file_path}")
             return
 
         if self.cap is not None:
@@ -197,45 +471,199 @@ class HistoryDialog(QDialog):
 
 # ==================== 后台检测线程 ====================
 
+class AlarmVideoWriter(threading.Thread):
+    """将告警片段写盘放到独立线程，绝不能阻塞实时检测循环。"""
+    _STOP = object()
+
+    def __init__(self, output_path, fps, frame_size, pre_frames, log_callback):
+        super().__init__(name="AlarmVideoWriter", daemon=True)
+        self.output_path = output_path
+        self.fps = fps
+        self.frame_size = frame_size
+        self.pre_frames = pre_frames
+        self.log_callback = log_callback
+        # 写盘暂时落后时宁可丢弃少量录像帧，也不要阻塞摄像头读取。
+        self.frames = Queue(maxsize=max(int(fps * 4), 60))
+
+    def submit(self, frame):
+        try:
+            self.frames.put_nowait(frame.copy())
+        except Full:
+            pass
+
+    def close(self):
+        try:
+            self.frames.put_nowait(self._STOP)
+        except Full:
+            # 队列满时移除最旧帧，确保结束信号可以送达。
+            try:
+                self.frames.get_nowait()
+                self.frames.put_nowait(self._STOP)
+            except Exception:
+                pass
+
+    def run(self):
+        writer = cv2.VideoWriter(
+            self.output_path, cv2.VideoWriter_fourcc(*'mp4v'), self.fps, self.frame_size
+        )
+        if not writer.isOpened():
+            self.log_callback("❌ 告警录像文件创建失败。")
+            return
+        try:
+            for frame in self.pre_frames:
+                writer.write(frame)
+            while True:
+                frame = self.frames.get()
+                if frame is self._STOP:
+                    break
+                writer.write(frame)
+        except Exception as e:
+            self.log_callback(f"❌ 告警录像保存异常: {e}")
+        finally:
+            writer.release()
+
 class DetectionThread(QThread):
     change_pixmap_signal = pyqtSignal(np.ndarray, str, int, bool)
     log_signal = pyqtSignal(str)
 
-    def __init__(self, source=0):
+    def __init__(self, source=0, settings=None):
         super().__init__()
         self.source = source
+        default_webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/e1d06cee-2c38-4679-962a-9fccb85fd766"
+        self.settings = settings if settings else {"fall_threshold": 50, "sound_enabled": True, "buffer_seconds": 10, "feishu_webhook": default_webhook}
+        self.settings["feishu_webhook"] = default_webhook
+            
         self.running = True
 
         self.save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'result')
         os.makedirs(self.save_dir, exist_ok=True)
-
         self.alarm_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alarm.mp3')
+        
+        self.last_feishu_time = 0 
+        self.alarm_recorder = None
 
     def stop(self):
         self.running = False
         self.wait()
 
     def play_alarm_sound(self):
-        """播放告警音频文件"""
+        if not self.settings.get("sound_enabled", True):
+            return
         try:
             if os.path.exists(self.alarm_file):
-                if not pygame.mixer.music.get_busy(): # 确保上一个播完或没在播时触发
+                if not pygame.mixer.music.get_busy():
                     pygame.mixer.music.load(self.alarm_file)
                     pygame.mixer.music.play()
         except Exception as e:
             print(f"播放警报音频异常: {e}")
 
+    def send_feishu_notification(self, video_filename):
+        webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/e1d06cee-2c38-4679-962a-9fccb85fd766"
+
+        current_time = time.time()
+        if current_time - self.last_feishu_time < 30:
+            return
+        self.last_feishu_time = current_time
+
+        time_str = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+        
+        payload = {
+            "msg_type": "interactive",
+            "card": {
+                "config": {
+                    "wide_screen_mode": True
+                },
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "🚨 紧急警报：智能看护系统检测到跌倒！"
+                    },
+                    "template": "red"
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**⚠️ 注意：监控画面检测到老人发生跌倒行为！**\n\n"
+                                       f"- **发生时间**：`{time_str}`\n"
+                                       f"- **录像存档**：`{video_filename}`\n"
+                                       f"- **系统状态**：已自动截取前后缓冲区视频保存至本地，并将告警事件记录成功写入 MySQL 数据库。"
+                        }
+                    },
+                    {
+                        "tag": "note",
+                        "elements": [
+                            {
+                                "tag": "plain_text",
+                                "content": "请家属立刻查看监控或通过历史回访确认老人安全！"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        data = json.dumps(payload).encode('utf-8')
+
+        try:
+            req = urllib.request.Request(
+                webhook_url, 
+                data=data, 
+                headers={'Content-Type': 'application/json'}, 
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                if result.get('code') == 0 or result.get('StatusCode') == 0:
+                    self.log_signal.emit("✅ 飞书机器人跌倒告警实时推送成功！")
+                else:
+                    self.log_signal.emit(f"⚠️ 飞书推送返回错误: {result}")
+        except Exception as e:
+            self.log_signal.emit(f"❌ 发送飞书通知异常: {e}")
+
+    def save_alarm_to_db(self, filename):
+        try:
+            db = pymysql.connect(
+                host='localhost',
+                user='root',
+                password='231006410',
+                database='fall_detector_db',
+                charset='utf8mb4'
+            )
+            cursor = db.cursor()
+            time_str = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+            cursor.execute(
+                "INSERT INTO alarm_logs (alarm_time, video_filename, status) VALUES (%s, %s, %s);",
+                (time_str, filename, "未处理")
+            )
+            db.commit()
+            cursor.close()
+            db.close()
+        except Exception as e:
+            print(f"写入数据库告警记录失败: {e}")
+
+    def persist_alarm_event(self, filename):
+        """数据库和网络请求均在独立线程中运行。"""
+        self.save_alarm_to_db(filename)
+        self.send_feishu_notification(filename)
+
     def run(self):
         self.log_signal.emit("正在加载 YOLOv8 & MediaPipe 模型...")
-        model = YOLO('yolov8n.pt')
+        try:
+            model = YOLO('yolov8n.pt')
+        except Exception as e:
+            self.log_signal.emit(f"❌ YOLO 模型加载失败: {e}")
+            return
         
-        cap = cv2.VideoCapture(self.source)
+        cap_source = int(self.source) if str(self.source).isdigit() else self.source
+        cap = cv2.VideoCapture(cap_source)
+        
         if not cap.isOpened():
-            self.log_signal.emit("❌ 错误：无法打开指定的视频源！")
-            self.running = False
+            self.log_signal.emit(f"❌ 错误：无法打开视频源 [{self.source}]！")
             return
 
-        self.log_signal.emit("✅ 视频源加载成功，开始监测...")
+        self.log_signal.emit(f"✅ 成功连接视频源: {self.source}")
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps <= 0 or math.isnan(fps):
@@ -248,20 +676,26 @@ class DetectionThread(QThread):
         dusme_video_sayisi = 0
         dusme_sonrasi_kareler = 0
         dusme_sonrasi_bekleme_suresi = 10
-        dusme_video_yazici = None
-        was_falling = False  # 状态跟踪变量，防止连续重复触发警报音
+        was_falling = False  
 
-        tampon_boyutu = 10
+        buffer_sec = self.settings.get("buffer_seconds", 10)
+        tampon_boyutu = int(buffer_sec * fps)
         kare_tamponu = deque(maxlen=tampon_boyutu)
 
         mp_cizim = mp.solutions.drawing_utils
         mp_poz = mp.solutions.pose
+        fall_threshold = self.settings.get("fall_threshold", 50)
 
         with mp_poz.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as poz:
             while self.running and cap.isOpened():
                 ret, kare = cap.read()
                 if not ret:
-                    break
+                    if not str(self.source).isdigit():
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        continue
+                    else:
+                        self.log_signal.emit("⚠️ 摄像头读取中断或无数据。")
+                        break
 
                 current_durus = "未检测到人员"
                 is_falling = False
@@ -269,7 +703,7 @@ class DetectionThread(QThread):
                 sonuclar = model(kare, verbose=False)
                 for sonuc in sonuclar:
                     for bbox, sinif in zip(sonuc.boxes.xyxy, sonuc.boxes.cls):
-                        if int(sinif) == 0:
+                        if int(sinif) == 0:  
                             x1, y1, x2, y2 = map(int, bbox)
                             x1, y1 = max(0, x1), max(0, y1)
                             x2, y2 = min(genislik, x2), min(yukseklik, y2)
@@ -287,48 +721,61 @@ class DetectionThread(QThread):
                                 )
 
                                 isaretler = kisi_sonuclari.pose_landmarks.landmark
-                                h, w, _ = kisi_bbox.shape
+                                h_box, w_box, _ = kisi_bbox.shape
 
                                 omuzlar = [
-                                    (isaretler[mp_poz.PoseLandmark.LEFT_SHOULDER.value].x * w, isaretler[mp_poz.PoseLandmark.LEFT_SHOULDER.value].y * h),
-                                    (isaretler[mp_poz.PoseLandmark.RIGHT_SHOULDER.value].x * w, isaretler[mp_poz.PoseLandmark.RIGHT_SHOULDER.value].y * h)
+                                    (isaretler[mp_poz.PoseLandmark.LEFT_SHOULDER.value].x * w_box, isaretler[mp_poz.PoseLandmark.LEFT_SHOULDER.value].y * h_box),
+                                    (isaretler[mp_poz.PoseLandmark.RIGHT_SHOULDER.value].x * w_box, isaretler[mp_poz.PoseLandmark.RIGHT_SHOULDER.value].y * h_box)
                                 ]
                                 kalcalar = [
-                                    (isaretler[mp_poz.PoseLandmark.LEFT_HIP.value].x * w, isaretler[mp_poz.PoseLandmark.LEFT_HIP.value].y * h),
-                                    (isaretler[mp_poz.PoseLandmark.RIGHT_HIP.value].x * w, isaretler[mp_poz.PoseLandmark.RIGHT_HIP.value].y * h)
+                                    (isaretler[mp_poz.PoseLandmark.LEFT_HIP.value].x * w_box, isaretler[mp_poz.PoseLandmark.LEFT_HIP.value].y * h_box),
+                                    (isaretler[mp_poz.PoseLandmark.RIGHT_HIP.value].x * w_box, isaretler[mp_poz.PoseLandmark.RIGHT_HIP.value].y * h_box)
                                 ]
 
                                 omuz_merkezi = ((omuzlar[0][0] + omuzlar[1][0]) / 2, (omuzlar[0][1] + omuzlar[1][1]) / 2)
                                 kalca_merkezi = ((kalcalar[0][0] + kalcalar[1][0]) / 2, (kalcalar[0][1] + kalcalar[1][1]) / 2)
 
                                 torso_aci = aci_hesapla(kalca_merkezi, omuz_merkezi)
-                                current_durus = durus_siniflandir(torso_aci)
+                                
+                                if torso_aci < 20:
+                                    current_durus = "站立 (Normal)"
+                                elif torso_aci > fall_threshold:
+                                    current_durus = "平躺 (Lying)"
+                                else:
+                                    current_durus = "跌倒中 (Falling)"
 
                                 if current_durus == "跌倒中 (Falling)":
                                     is_falling = True
                                     dusme_sayaci += 1
                                     dusme_sonrasi_kareler = 0
 
-                                    # 🌟 跌倒瞬间触发语音警报
                                     if not was_falling:
                                         was_falling = True
                                         self.play_alarm_sound()
 
-                                    if 0.1 * fps <= dusme_sayaci <= 0.5 * fps and dusme_video_yazici is None:
+                                    if 0.1 * fps <= dusme_sayaci <= 0.5 * fps and self.alarm_recorder is None:
                                         dusme_video_sayisi += 1
-                                        dusme_video_dosyasi = os.path.join(self.save_dir, f'dusme_{dusme_video_sayisi}.mp4')
-                                        dusme_video_yazici = cv2.VideoWriter(
-                                            dusme_video_dosyasi, cv2.VideoWriter_fourcc(*'mp4v'), fps, (genislik, yukseklik)
+                                        filename = f'dusme_{QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")}_{dusme_video_sayisi}.mp4'
+                                        dusme_video_dosyasi = os.path.join(self.save_dir, filename)
+
+                                        # 预缓存写盘、MySQL 和飞书请求都是慢操作；放到后台后，
+                                        # 本线程仍能持续读取摄像头帧并刷新界面。
+                                        self.alarm_recorder = AlarmVideoWriter(
+                                            dusme_video_dosyasi, fps, (genislik, yukseklik),
+                                            list(kare_tamponu), self.log_signal.emit
                                         )
-                                        while kare_tamponu:
-                                            dusme_video_yazici.write(kare_tamponu.popleft())
+                                        self.alarm_recorder.start()
+                                        threading.Thread(
+                                            target=self.persist_alarm_event,
+                                            args=(filename,), name="AlarmEventNotifier", daemon=True
+                                        ).start()
                                         
-                                        self.log_signal.emit(f"⚠️ 警报：检测到人员跌倒！已保存至 result/dusme_{dusme_video_sayisi}.mp4")
+                                        self.log_signal.emit(f"⚠️ 警报：检测到人员跌倒！已存入本地与MySQL、推送飞书并保存至 {filename}")
                                 else:
                                     dusme_sayaci = 0
-                                    was_falling = False  # 恢复状态，为下一次跌倒做准备
+                                    was_falling = False  
 
-                                if current_durus == "站立 (Normal)" and dusme_video_yazici is not None:
+                                if current_durus == "站立 (Normal)" and self.alarm_recorder is not None:
                                     dusme_sonrasi_kareler += 1
 
                             kare[y1:y2, x1:x2] = kisi_bbox
@@ -339,50 +786,152 @@ class DetectionThread(QThread):
                             text_pos = (x1, max(y1 - 30, 10))
                             kare = cv2_add_chinese_text(kare, current_durus, text_pos, font_size=22, color=color)
 
-                if dusme_video_yazici is not None:
-                    dusme_video_yazici.write(kare)
+                if self.alarm_recorder is not None:
+                    self.alarm_recorder.submit(kare)
 
-                if dusme_sonrasi_kareler > dusme_sonrasi_bekleme_suresi and dusme_video_yazici is not None:
-                    dusme_video_yazici.release()
-                    dusme_video_yazici = None
+                if dusme_sonrasi_kareler > dusme_sonrasi_bekleme_suresi and self.alarm_recorder is not None:
+                    self.alarm_recorder.close()
+                    self.alarm_recorder = None
                     self.log_signal.emit("ℹ️ 跌倒事件视频片段记录完毕。")
 
                 kare_tamponu.append(kare.copy())
                 self.change_pixmap_signal.emit(kare, current_durus, dusme_video_sayisi, is_falling)
 
         cap.release()
-        if dusme_video_yazici is not None:
-            dusme_video_yazici.release()
+        if self.alarm_recorder is not None:
+            self.alarm_recorder.close()
+            self.alarm_recorder = None
         self.log_signal.emit("⏹ 视频流已关闭。")
 
 
 # ==================== PyQt6 主界面 ====================
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, user_role="admin", username="root"):
         super().__init__()
+        self.user_role = user_role  
+        self.username = username
+
+        self.current_settings = {
+            "fall_threshold": 50,
+            "sound_enabled": True,
+            "buffer_seconds": 10,
+            "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/e1d06cee-2c38-4679-962a-9fccb85fd766"
+        }
         
         ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'diedao.ui')
         loadUi(ui_path, self)
 
-        self.thread = None
-        self.video_source = 0
+        role_str = "【管理员】" if self.user_role == "admin" else "【普通家属端】"
+        self.setWindowTitle(f"智能跌倒检测与看护系统 {role_str} - 当前用户: {self.username}")
 
-        self.btn_camera.clicked.connect(self.set_camera_source)
+        self.thread = None
+        self.video_source = 0  
+
+        self.setup_camera_combobox()
+
         self.btn_file.clicked.connect(self.select_video_file)
         self.btn_start.clicked.connect(self.start_detection)
         self.btn_stop.clicked.connect(self.stop_detection)
         self.btn_history.clicked.connect(self.open_history_dialog)
 
+        self.setup_extra_buttons()
+        self.apply_role_permissions()
+
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_clock)
         self.timer.start(1000)
 
-        self.add_log("系统初始化完成，等待启动指令。")
+        self.add_log(f"系统启动成功，已连接 MySQL 数据库 (当前用户: {self.username})")
+
+    def setup_extra_buttons(self):
+        parent_layout = self.btn_history.parent().layout()
+        if parent_layout is not None:
+            self.btn_settings = QPushButton("⚙️ 系统高级设置")
+            self.btn_settings.clicked.connect(self.open_settings_dialog)
+            
+            self.btn_switch_user = QPushButton("🔄 切换账号身份")
+            self.btn_switch_user.setStyleSheet("background-color: #475569; color: #38BDF8;")
+            self.btn_switch_user.clicked.connect(self.switch_account)
+
+            index = parent_layout.indexOf(self.btn_history)
+            parent_layout.insertWidget(index + 1, self.btn_settings)
+            parent_layout.insertWidget(index + 2, self.btn_switch_user)
+
+    def switch_account(self):
+        if self.thread is not None and self.thread.isRunning():
+            reply = QMessageBox.question(
+                self, "正在监测中", 
+                "当前正在进行实时视频监测，切换身份将停止监测。是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+            self.stop_detection()
+
+        self.hide()
+
+        login_dlg = LoginDialog(self)
+        if login_dlg.exec() == QDialog.DialogCode.Accepted:
+            new_role = login_dlg.user_role
+            new_uname = login_dlg.logged_username
+            
+            self.new_window = MainWindow(user_role=new_role, username=new_uname)
+            self.new_window.show()
+            self.close()
+        else:
+            self.show()
+
+    def apply_role_permissions(self):
+        if self.user_role == "family":
+            if hasattr(self, 'btn_settings'):
+                self.btn_settings.setEnabled(False)
+                self.btn_settings.setToolTip("权限不足：只有管理员账户可以修改系统设置参数！")
+            self.add_log("提示：当前为家属权限，高级设置功能已被锁定。")
+
+    def setup_camera_combobox(self):
+        parent_layout = self.btn_camera.parent().layout()
+        if parent_layout is not None:
+            index = parent_layout.indexOf(self.btn_camera)
+            parent_layout.removeWidget(self.btn_camera)
+            self.btn_camera.deleteLater()
+
+            self.camera_combo = QComboBox()
+            available_cams = 0
+            for i in range(4):
+                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW if os.name == 'nt' else cv2.CAP_ANY)
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    if ret:
+                        if i == 0:
+                            cam_name = "📹 摄像头 0 (iVCam / 虚拟或首选设备)"
+                        elif i == 1:
+                            cam_name = "📹 摄像头 1 (电脑内置摄像头 / 外接)"
+                        else:
+                            cam_name = f"📹 摄像头 {i} (外接设备)"
+                            
+                        self.camera_combo.addItem(cam_name, i)
+                        available_cams += 1
+                    cap.release()
+
+            if available_cams == 0:
+                self.camera_combo.addItem("⚠️ 未检测到可用摄像头", 0)
+
+            self.camera_combo.currentIndexChanged.connect(self.on_camera_changed)
+            
+            if index != -1:
+                parent_layout.insertWidget(index, self.camera_combo)
+            else:
+                parent_layout.addWidget(self.camera_combo)
+
+    def on_camera_changed(self, index):
+        data = self.camera_combo.currentData()
+        if data is not None:
+            self.video_source = data
+            self.add_log(f"已切换视频输入源 -> 摄像头索引 [{data}]")
 
     def update_clock(self):
-        now = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
-        self.lbl_clock.setText(f"🕒 {now}")
+        self.lbl_clock.setText(f"🕒 {QDateTime.currentDateTime().toString('yyyy-MM-dd hh:mm:ss')}")
 
     def add_log(self, text):
         time_str = QDateTime.currentDateTime().toString("hh:mm:ss")
@@ -390,30 +939,40 @@ class MainWindow(QMainWindow):
         self.log_list.addItem(item)
         self.log_list.scrollToBottom()
 
-    def set_camera_source(self):
-        self.video_source = 0
-        self.add_log("切换输入源为: 默认摄像头 (0)")
-
     def select_video_file(self):
-        from PyQt6.QtWidgets import QFileDialog
         file_name, _ = QFileDialog.getOpenFileName(self, "选择视频文件", "", "Video Files (*.mp4 *.avi *.mov)")
         if file_name:
             self.video_source = file_name
-            self.add_log(f"选择文件: {file_name.split('/')[-1]}")
+            self.add_log(f"已选择本地测试视频: {file_name.split('/')[-1]}")
 
     def open_history_dialog(self):
         dialog = HistoryDialog(self)
         dialog.exec()
 
+    def open_settings_dialog(self):
+        if self.user_role != "admin":
+            QMessageBox.warning(self, "权限拒绝", "您当前是以普通家属身份登录，无法修改系统参数！")
+            return
+
+        dialog = SettingsDialog(self.current_settings, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.current_settings = dialog.settings
+            self.add_log("⚙️ 系统设置已更新: 飞书Webhook已强制绑定")
+            QMessageBox.information(self, "设置成功", "高级参数已成功更新！若正在监测，请重新点击“开始监测”生效。")
+
     def start_detection(self):
-        self.thread = DetectionThread(source=self.video_source)
+        if self.thread is not None and self.thread.isRunning():
+            return
+            
+        self.thread = DetectionThread(source=self.video_source, settings=self.current_settings)
         self.thread.change_pixmap_signal.connect(self.update_image)
         self.thread.log_signal.connect(self.add_log)
         self.thread.start()
 
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.btn_camera.setEnabled(False)
+        if hasattr(self, 'camera_combo'):
+            self.camera_combo.setEnabled(False)
         self.btn_file.setEnabled(False)
 
         self.lbl_live_badge.setText("● LIVE 实时监测中")
@@ -426,7 +985,8 @@ class MainWindow(QMainWindow):
 
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.btn_camera.setEnabled(True)
+        if hasattr(self, 'camera_combo'):
+            self.camera_combo.setEnabled(True)
         self.btn_file.setEnabled(True)
 
         self.video_label.setText("检测已停止")
@@ -472,6 +1032,16 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE_SHEET)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+
+    if not init_database():
+        sys.exit(1)
+
+    login_dlg = LoginDialog()
+    if login_dlg.exec() == QDialog.DialogCode.Accepted:
+        role = login_dlg.user_role
+        uname = login_dlg.logged_username
+        window = MainWindow(user_role=role, username=uname)
+        window.show()
+        sys.exit(app.exec())
+    else:
+        sys.exit(0)
