@@ -1,11 +1,23 @@
-# Computer vision and pose estimation
+# ==================== Computer Vision & Pose Estimation ====================
+# YOLOv8 (Ultralytics) - 实时人体目标检测
 ultralytics==8.2.81
+# MediaPipe Pose - 关键点姿态估计
 mediapipe==0.10.14
+# OpenCV - 视频采集、绘制与视频编码
 opencv-python==4.10.0.84
-
-# Desktop application and image rendering
-PyQt6==6.7.1
+# Pillow - 中文字体绘制 (cv2_add_chinese_text)
 Pillow==10.4.0
 
-# Numerical computing
+# ==================== Desktop GUI (PyQt6) ====================
+# PyQt6 - 桌面图形界面
+PyQt6==6.7.1
+# Pygame - 告警音频播放 (alarm.mp3)
+pygame==2.5.2
+
+# ==================== Data Persistence ====================
+# PyMySQL - MySQL 告警记录与用户登录鉴权
+PyMySQL==1.1.1
+
+# ==================== Numerical Computing ====================
+# NumPy - 数组与角度计算
 numpy==1.26.4
